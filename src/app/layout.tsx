@@ -10,8 +10,20 @@ import AdBottom from '../components/AdBottom';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'GreenBoxMail',
-  description: '10 Minute Disposable Email Service',
+  title: 'GreenBoxMail – 10 Minute Disposable Email Service',
+  description: 'Generate a disposable email address that expires in 10 minutes. Keep your inbox secure and private.',
+  openGraph: {
+    title: 'GreenBoxMail – 10 Minute Disposable Email Service',
+    description: 'Generate a disposable email address that expires in 10 minutes. Keep your inbox secure and private.',
+    url: 'https://greenboxmail.vercel.app',
+    siteName: 'GreenBoxMail',
+    type: 'website',
+  },
+  twitter: {
+    card: 'summary',
+    title: 'GreenBoxMail – 10 Minute Disposable Email Service',
+    description: 'Generate a disposable email address that expires in 10 minutes. Keep your inbox secure and private.',
+  },
 };
 
 export default function RootLayout({
