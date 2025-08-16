@@ -16,7 +16,6 @@ const EmailPanel: React.FC = () => {
   const [jwt, setJwt] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
 
-  // Generate random string
   const generateRandomString = (length: number) => {
     return Math.random().toString(36).substring(2, 2 + length);
   };
@@ -24,24 +23,20 @@ const EmailPanel: React.FC = () => {
   const createMailbox = async () => {
     setLoading(true);
     try {
-      // Get available domain
       const domainRes = await fetch('https://api.mail.tm/domains');
       const domainData = await domainRes.json();
       const domains = domainData['hydra:member'];
       const domain = domains && domains.length > 0 ? domains[0].domain : 'mail.tm';
-      // Generate random address and password
       const localPart = generateRandomString(10);
       const address = `${localPart}@${domain}`;
       const password = generateRandomString(12);
 
-      // Create account
       await fetch('https://api.mail.tm/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ address, password }),
       });
 
-      // Get token
       const tokenRes = await fetch('https://api.mail.tm/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -59,11 +54,59 @@ const EmailPanel: React.FC = () => {
     }
   };
 
-  // On mount create mailbox
+  // create mailbox on mount
   useEffect(() => {
     createMailbox();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // poll messages every 5 seconds when jwt is available
+  useEffect(() => {
+    if (!jwt) return;
+    const fetchMessages = async () => {
+      try {
+        const res = await fetch('https://api.mail.tm/messages', {
+          headers: {
+            Authorization: `Bearer ${jwt}`,
+          },
+        });
+        const data = await res.json();
+        const msgs = data['hydra:member'] || [];
+        setMessages(
+          msgs.map((m: any) => ({
+            id: m.id,
+            from: m.from?.address || m.from?.name || '',
+            subject: m.subject || '',
+            body: '',
+          }))
+        );
+      } catch (error) {
+        console.error('Error fetching messages:', error);
+      }
+    };
+    fetchMessages();
+    const interval = setInterval(fetchMessages, 5000);
+    return () => clearInterval(interval);
+  }, [jwt]);
+
+  // function to view full message
+  const viewMessage = async (msg: Message) => {
+    if (!jwt) return;
+    try {
+      const res = await fetch(`https://api.mail.tm/messages/${msg.id}`, {
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      const detail = await res.json();
+      setSelectedMessage({
+        id: msg.id,
+        from: msg.from,
+        subject: msg.subject,
+        body: detail.text || detail.html || '',
+      });
+    } catch (error) {
+      console.error('Error fetching message:', error);
+    }
+  };
 
   return (
     <div className="p-4 bg-gray-50 dark:bg-gray-800 rounded-lg shadow-md w-full">
@@ -105,7 +148,7 @@ const EmailPanel: React.FC = () => {
                 <li
                   key={msg.id}
                   className="p-2 border border-gray-200 dark:border-gray-700 rounded cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700"
-                  onClick={() => setSelectedMessage(msg)}
+                  onClick={() => viewMessage(msg)}
                 >
                   <div className="text-sm font-medium">{msg.subject || 'No Subject'}</div>
                   <div className="text-xs text-gray-500">{msg.from}</div>
