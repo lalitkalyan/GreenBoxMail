@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 interface Message {
   id: string;
@@ -10,34 +10,54 @@ interface Message {
 }
 
 const EmailPanel: React.FC = () => {
+  const [emailAddress, setEmailAddress] = useState<string | null>(null);
+  const [jwt, setJwt] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
-  const [emailAddress, setEmailAddress] = useState<string>('');
-  const [jwt, setJwt] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
+  const [timeLeft, setTimeLeft] = useState<number>(600); // 10 minutes (600 seconds)
+  const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef   = useRef<NodeJS.Timeout | null>(null);
 
-  const generateRandomString = (length: number) => {
+  // Generate a random string for mailbox credentials
+  const randomString = (length: number) => {
     return Math.random().toString(36).substring(2, 2 + length);
   };
 
+  // Create a new mailbox, set token and reset timer
   const createMailbox = async () => {
-    setLoading(true);
     try {
-      const domainRes = await fetch('https://api.mail.tm/domains');
-      const domainData = await domainRes.json();
-      const domains = domainData['hydra:member'];
-      const domain = domains && domains.length > 0 ? domains[0].domain : 'mail.tm';
-      const localPart = generateRandomString(10);
-      const address = `${localPart}@${domain}`;
-      const password = generateRandomString(12);
+      setLoading(true);
 
+      // Clear any existing intervals/timers
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+      }
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+      setTimeLeft(600);
+      setMessages([]);
+      setSelectedMessage(null);
+
+      // Get available domain
+      const domainRes  = await fetch('https://api.mail.tm/domains');
+      const domainData = await domainRes.json();
+      const domains    = domainData['hydra:member'];
+      const domain     = domains && domains.length > 0 ? domains[0].domain : 'mail.tm';
+      const localPart  = randomString(10);
+      const address    = `${localPart}@${domain}`;
+      const password   = randomString(12);
+
+      // Create an account
       await fetch('https://api.mail.tm/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ address, password }),
       });
 
-      const tokenRes = await fetch('https://api.mail.tm/token', {
+      // Request token
+      const tokenRes  = await fetch('https://api.mail.tm/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ address, password }),
@@ -45,126 +65,161 @@ const EmailPanel: React.FC = () => {
       const tokenData = await tokenRes.json();
       setJwt(tokenData.token);
       setEmailAddress(address);
-      setMessages([]);
-      setSelectedMessage(null);
+
+      setLoading(false);
     } catch (error) {
-      console.error('Error creating mailbox:', error);
-    } finally {
+      console.error('Error creating mailbox', error);
       setLoading(false);
     }
   };
 
-  // create mailbox on mount
-  useEffect(() => {
-    createMailbox();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // poll messages every 5 seconds when jwt is available
-  useEffect(() => {
-    if (!jwt) return;
-    const fetchMessages = async () => {
-      try {
-        const res = await fetch('https://api.mail.tm/messages', {
-          headers: {
-            Authorization: `Bearer ${jwt}`,
-          },
-        });
-        const data = await res.json();
-        const msgs = data['hydra:member'] || [];
-        setMessages(
-          msgs.map((m: any) => ({
-            id: m.id,
-            from: m.from?.address || m.from?.name || '',
-            subject: m.subject || '',
-            body: '',
-          }))
-        );
-      } catch (error) {
-        console.error('Error fetching messages:', error);
-      }
-    };
-    fetchMessages();
-    const interval = setInterval(fetchMessages, 5000);
-    return () => clearInterval(interval);
-  }, [jwt]);
-
-  // function to view full message
-  const viewMessage = async (msg: Message) => {
-    if (!jwt) return;
+  // Fetch list of messages
+  const fetchMessages = async (auth: string) => {
     try {
-      const res = await fetch(`https://api.mail.tm/messages/${msg.id}`, {
-        headers: { Authorization: `Bearer ${jwt}` },
+      const res  = await fetch('https://api.mail.tm/messages', {
+        headers: { Authorization: `Bearer ${auth}` },
       });
-      const detail = await res.json();
-      setSelectedMessage({
-        id: msg.id,
-        from: msg.from,
-        subject: msg.subject,
-        body: detail.text || detail.html || '',
-      });
+      const data = await res.json();
+      const msgs = data['hydra:member'].map((m: any) => ({
+        id: m.id,
+        from: m.from?.address || '',
+        subject: m.subject || '(no subject)',
+        body: '',
+      }));
+      setMessages(msgs);
     } catch (error) {
-      console.error('Error fetching message:', error);
+      console.error('Error fetching messages', error);
     }
   };
 
+  // Fetch full message content
+  const viewMessage = async (id: string, auth: string) => {
+    try {
+      const res  = await fetch(`https://api.mail.tm/messages/${id}`, {
+        headers: { Authorization: `Bearer ${auth}` },
+      });
+      const data = await res.json();
+      setSelectedMessage({
+        id: data.id,
+        from: data.from?.address || '',
+        subject: data.subject || '(no subject)',
+        body: data.text || data.intro || '',
+      });
+    } catch (error) {
+      console.error('Error fetching message', error);
+    }
+  };
+
+  // Create mailbox on component mount
+  useEffect(() => {
+    createMailbox();
+  }, []);
+
+  // Start polling when token is available
+  useEffect(() => {
+    if (jwt) {
+      // Fetch immediately then poll
+      fetchMessages(jwt);
+      const interval = setInterval(() => {
+        fetchMessages(jwt);
+      }, 5000);
+      pollingRef.current = interval;
+      return () => clearInterval(interval);
+    }
+  }, [jwt]);
+
+  // Countdown timer
+  useEffect(() => {
+    if (timeLeft <= 0) {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+      if (timerRef.current)   clearInterval(timerRef.current);
+      setEmailAddress(null);
+      setJwt(null);
+      return;
+    }
+    const t = setInterval(() => {
+      setTimeLeft((prev) => prev - 1);
+    }, 1000);
+    timerRef.current = t;
+    return () => clearInterval(t);
+  }, [timeLeft]);
+
+  const handleNewEmail = () => {
+    createMailbox();
+  };
+
+  const formatTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const s = (seconds % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
   return (
-    <div className="p-4 bg-gray-50 dark:bg-gray-800 rounded-lg shadow-md w-full">
-      <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-        <div>
-          <span className="font-semibold">Current Address:</span>
-          <span className="ml-2 font-mono">{emailAddress || '...'}</span>
+    <div className="p-4 bg-white dark:bg-gray-900 rounded-lg shadow-md flex flex-col md:flex-row gap-4">
+      <div className="flex-1">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex flex-col">
+            <span className="text-sm text-gray-600 dark:text-gray-300">Your temporary email</span>
+            <span className="text-lg font-mono font-semibold text-green-600 dark:text-green-400">
+              {emailAddress || 'Generating...'}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                if (emailAddress) {
+                  navigator.clipboard.writeText(emailAddress);
+                }
+              }}
+              className="px-3 py-1 text-sm bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200 rounded hover:bg-green-200 dark:hover:bg-green-800"
+              disabled={!emailAddress}
+            >
+              Copy
+            </button>
+            <button
+              onClick={handleNewEmail}
+              className="px-3 py-1 text-sm bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 rounded hover:bg-blue-200 dark:hover:bg-blue-800"
+            >
+              Generate New Email
+            </button>
+          </div>
         </div>
-        <button
-          className="inline-flex items-center px-3 py-1 text-sm text-white bg-green-600 rounded hover:bg-green-700 disabled:opacity-50"
-          onClick={() => {
-            if (emailAddress) navigator.clipboard.writeText(emailAddress);
-          }}
-          disabled={!emailAddress}
-        >
-          Copy
-        </button>
+        <div className="mb-4">
+          <span className="text-sm text-gray-600 dark:text-gray-300">Time left:</span>{' '}
+          <span className="font-mono">{formatTime(timeLeft)}</span>
+        </div>
+        <div className="border rounded p-2 h-64 overflow-y-auto mb-4">
+          {messages.length === 0 && <p className="text-sm text-gray-500">No messages yet.</p>}
+          <ul>
+            {messages.map((msg) => (
+              <li
+                key={msg.id}
+                className={`p-2 border-b cursor-pointer ${
+                  selectedMessage?.id === msg.id ? 'bg-green-100 dark:bg-green-800' : ''
+                }`}
+                onClick={() => {
+                  if (jwt) {
+                    viewMessage(msg.id, jwt);
+                  }
+                }}
+              >
+                <p className="font-semibold">{msg.subject}</p>
+                <p className="text-xs text-gray-500">{msg.from}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
       </div>
-      <div className="mb-4 flex justify-between items-center">
-        <div className="text-sm">
-          <span className="font-semibold">Expires in:</span> 10:00
-        </div>
-        <button
-          className="inline-flex items-center px-3 py-1 text-sm text-white bg-green-600 rounded hover:bg-green-700 disabled:opacity-50"
-          onClick={createMailbox}
-          disabled={loading}
-        >
-          {loading ? 'Generating...' : 'Generate New Email'}
-        </button>
-      </div>
-      <div className="flex flex-col md:flex-row gap-4">
-        <div className="md:w-1/3 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded p-2">
-          <h2 className="text-sm font-semibold mb-2">Inbox</h2>
-          {messages.length === 0 ? (
-            <div className="text-gray-500 text-sm">No emails yet.</div>
-          ) : (
-            <ul className="space-y-1">
-              {messages.map((msg) => (
-                <li
-                  key={msg.id}
-                  className="p-2 border border-gray-200 dark:border-gray-700 rounded cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700"
-                  onClick={() => viewMessage(msg)}
-                >
-                  <div className="text-sm font-medium">{msg.subject || 'No Subject'}</div>
-                  <div className="text-xs text-gray-500">{msg.from}</div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-        <div className="md:flex-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded p-2">
-          <h2 className="text-sm font-semibold mb-2">Message</h2>
-          {selectedMessage ? (
-            <div className="text-sm whitespace-pre-wrap">{selectedMessage.body || 'No content'}</div>
-          ) : (
-            <div className="text-gray-500 text-sm">Select an email to view message.</div>
-          )}
-        </div>
+      <div className="flex-1 border rounded p-2 h-72 overflow-y-auto">
+        {selectedMessage ? (
+          <div>
+            <h3 className="font-semibold mb-2">{selectedMessage.subject}</h3>
+            <p className="text-xs text-gray-500 mb-2">From: {selectedMessage.from}</p>
+            <pre className="whitespace-pre-wrap text-sm">{selectedMessage.body}</pre>
+          </div>
+        ) : (
+          <p className="text-sm text-gray-500">Select a message to view its content.</p>
+        )}
       </div>
     </div>
   );
